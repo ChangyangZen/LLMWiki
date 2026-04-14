@@ -3,3 +3,7 @@
 /data/raw/*.pdf
 llm-wiki.md
 /data/wiki/
+
+/data/*.json
+/data/*.md
+!/README.md
