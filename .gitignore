@@ -1,0 +1,4 @@
+# Ignore raw paper sources ingested into the local graph
+/data/raw/*.md
+/data/raw/*.pdf
+llm-wiki.md
