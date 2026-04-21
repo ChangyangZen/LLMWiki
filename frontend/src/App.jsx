@@ -1,6 +1,7 @@
 import { useState, useCallback } from 'react'
 import KnowledgeGraph from './components/KnowledgeGraph'
 import NodePanel from './components/NodePanel'
+import SearchBox from './components/SearchBox'
 import TypePanel from './components/TypePanel'
 import UploadPanel from './components/UploadPanel'
 import { formatNodeType } from './components/graphTheme'
@@ -13,6 +14,7 @@ export default function App() {
   const [graphVersion, setGraphVersion] = useState(0)
   const [graphResetToken, setGraphResetToken] = useState(0)
   const [sidebarTab, setSidebarTab] = useState('upload') // 'upload' | 'type' | 'node'
+  const [sidebarVisible, setSidebarVisible] = useState(true)
 
   const handleGraphNodeClick = useCallback((node) => {
     setSelectedNode(node)
@@ -68,6 +70,20 @@ export default function App() {
           <h1>LLM Wiki</h1>
           <span className="subtitle">Research Knowledge Graph</span>
         </div>
+        <SearchBox
+          graphVersion={graphVersion}
+          onSelectNode={(node) => {
+            setSelectedNode(node)
+            setSidebarVisible(true)
+            setSidebarTab('node')
+            setGraphFocusTarget({ id: node.id, nonce: Date.now() })
+          }}
+          onSelectPaper={(paper) => {
+            if (paper.source_url) {
+              window.open(paper.source_url, '_blank', 'noopener')
+            }
+          }}
+        />
         <div className="header-tabs">
           <button
             className={sidebarTab === 'upload' ? 'tab active' : 'tab'}
@@ -95,7 +111,7 @@ export default function App() {
       </header>
 
       <div className="app-body">
-        <aside className="sidebar">
+        <aside className={`sidebar${sidebarVisible ? '' : ' sidebar-hidden'}`}>
           {sidebarTab === 'upload' ? (
             <UploadPanel onIngestComplete={handleIngestComplete} />
           ) : sidebarTab === 'type' ? (
@@ -119,6 +135,13 @@ export default function App() {
         </aside>
 
         <main className="graph-container">
+          <button
+            className="sidebar-toggle"
+            onClick={() => setSidebarVisible(v => !v)}
+            title={sidebarVisible ? 'Hide sidebar' : 'Show sidebar'}
+          >
+            {sidebarVisible ? '◀' : '▶'}
+          </button>
           <KnowledgeGraph
             version={graphVersion}
             onNodeClick={handleGraphNodeClick}

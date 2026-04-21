@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useCallback } from 'react'
+import { useEffect, useRef, useState, useCallback, useMemo } from 'react'
 import ForceGraph2D from 'react-force-graph-2d'
 import { TYPE_COLORS, DEFAULT_COLOR, formatNodeType } from './graphTheme'
 
@@ -52,6 +52,7 @@ export default function KnowledgeGraph({
   resetViewToken,
 }) {
   const [graphData, setGraphData] = useState({ nodes: [], links: [] })
+  const [hiddenTypes, setHiddenTypes] = useState(new Set())
   const [loading, setLoading] = useState(true)
   const [spread, setSpread] = useState(DEFAULT_SPREAD)
   const [viewportFill, setViewportFill] = useState(DEFAULT_VIEWPORT_FILL)
@@ -70,6 +71,32 @@ export default function KnowledgeGraph({
   const viewportFillRef = useRef(DEFAULT_VIEWPORT_FILL)
   const overviewModeRef = useRef(true)
   const labelMeasureContextRef = useRef(null)
+
+  // Filter graph data by hidden types
+  const filteredGraphData = useMemo(() => {
+    if (hiddenTypes.size === 0) return graphData
+    const visibleNodeIds = new Set()
+    const nodes = graphData.nodes.filter(n => {
+      if (hiddenTypes.has(n.type)) return false
+      visibleNodeIds.add(n.id)
+      return true
+    })
+    const links = graphData.links.filter(l => {
+      const srcId = typeof l.source === 'object' ? l.source.id : l.source
+      const tgtId = typeof l.target === 'object' ? l.target.id : l.target
+      return visibleNodeIds.has(srcId) && visibleNodeIds.has(tgtId)
+    })
+    return { nodes, links }
+  }, [graphData, hiddenTypes])
+
+  const toggleTypeVisibility = useCallback((type) => {
+    setHiddenTypes(prev => {
+      const next = new Set(prev)
+      if (next.has(type)) next.delete(type)
+      else next.add(type)
+      return next
+    })
+  }, [])
 
   const setOverviewState = useCallback((enabled) => {
     overviewModeRef.current = enabled
@@ -103,11 +130,11 @@ export default function KnowledgeGraph({
 
   const fitGraphInView = useCallback((includeLabels = overviewModeRef.current) => {
     const fg = fgRef.current
-    if (!fg || !graphData.nodes.length || graphSize.width <= 0 || graphSize.height <= 0) {
+    if (!fg || !filteredGraphData.nodes.length || graphSize.width <= 0 || graphSize.height <= 0) {
       return false
     }
 
-    const positionedNodes = graphData.nodes.filter(
+    const positionedNodes = filteredGraphData.nodes.filter(
       node => Number.isFinite(node.x) && Number.isFinite(node.y)
     )
     if (!positionedNodes.length) return false
@@ -202,18 +229,18 @@ export default function KnowledgeGraph({
     )
     fg.zoom(targetZoom, 400)
     return true
-  }, [getLabelWidthPx, graphData.nodes, graphSize.height, graphSize.width, viewportFill])
+  }, [getLabelWidthPx, filteredGraphData.nodes, graphSize.height, graphSize.width, viewportFill])
 
   const reheatGraph = useCallback(() => {
     const fg = fgRef.current
-    if (!fg || !graphData.nodes.length || graphSize.width <= 0 || graphSize.height <= 0) {
+    if (!fg || !filteredGraphData.nodes.length || graphSize.width <= 0 || graphSize.height <= 0) {
       return false
     }
 
     applySpreadForces()
     fg.d3ReheatSimulation()
     return true
-  }, [applySpreadForces, graphData.nodes.length, graphSize.height, graphSize.width])
+  }, [applySpreadForces, filteredGraphData.nodes.length, graphSize.height, graphSize.width])
 
   const zoomBy = useCallback((factor) => {
     const fg = fgRef.current
@@ -228,7 +255,7 @@ export default function KnowledgeGraph({
     if (!fg || !nodeId) return false
 
     setOverviewState(false)
-    const targetNode = graphData.nodes.find(node => node.id === nodeId)
+    const targetNode = filteredGraphData.nodes.find(node => node.id === nodeId)
     if (!targetNode || !Number.isFinite(targetNode.x) || !Number.isFinite(targetNode.y)) {
       return false
     }
@@ -237,7 +264,7 @@ export default function KnowledgeGraph({
     fg.zoom(CLICK_ZOOM, duration)
     pendingFocusNodeId.current = null
     return true
-  }, [graphData.nodes, setOverviewState])
+  }, [filteredGraphData.nodes, setOverviewState])
 
   const fetchGraph = useCallback(async () => {
     setLoading(true)
@@ -321,7 +348,7 @@ export default function KnowledgeGraph({
         window.removeEventListener('resize', updateSize)
       }
     }
-  }, [loading, graphData.nodes.length])
+  }, [loading, filteredGraphData.nodes.length])
 
   useEffect(() => {
     if (!focusTarget?.id) return
@@ -332,13 +359,13 @@ export default function KnowledgeGraph({
 
   useEffect(() => {
     if (initialLayoutRequested.current) return
-    if (!graphData.nodes.length || graphSize.width <= 0 || graphSize.height <= 0) return
+    if (!filteredGraphData.nodes.length || graphSize.width <= 0 || graphSize.height <= 0) return
 
     initialLayoutRequested.current = true
     pendingOverviewMode.current = true
     pendingRefit.current = true
     reheatGraph()
-  }, [graphData.nodes.length, graphSize.height, graphSize.width, reheatGraph])
+  }, [filteredGraphData.nodes.length, graphSize.height, graphSize.width, reheatGraph])
 
   useEffect(() => {
     if (!resetViewToken || resetViewToken === lastResetToken.current) return
@@ -505,7 +532,7 @@ export default function KnowledgeGraph({
             ref={fgRef}
             width={graphSize.width}
             height={graphSize.height}
-            graphData={graphData}
+            graphData={filteredGraphData}
             nodeCanvasObject={paintNode}
             nodeCanvasObjectMode={() => 'replace'}
             nodeLabel={node => `${node.label}\n${node.type}\n\n${node.description || ''}`}
@@ -532,19 +559,45 @@ export default function KnowledgeGraph({
       </div>
 
       <div className="graph-legend">
-        <h4>Node Types</h4>
-        {Object.entries(TYPE_COLORS).map(([type, color]) => (
-          <button
-            key={type}
-            type="button"
-            className={`legend-item legend-item-btn ${selectedType === type ? 'active' : ''}`}
-            onClick={() => onTypeClick(type)}
-          >
-            <div className="legend-dot" style={{ background: color }} />
-            <span>{formatNodeType(type)}</span>
-            <span className="legend-count">{typeCounts[type] || 0}</span>
-          </button>
-        ))}
+        <div className="legend-header-row">
+          <h4>Node Types</h4>
+          {hiddenTypes.size > 0 && (
+            <button
+              type="button"
+              className="legend-show-all"
+              onClick={() => setHiddenTypes(new Set())}
+            >
+              Show all
+            </button>
+          )}
+        </div>
+        {Object.entries(TYPE_COLORS).map(([type, color]) => {
+          const hidden = hiddenTypes.has(type)
+          const count = typeCounts[type] || 0
+          return (
+            <div
+              key={type}
+              className={`legend-item ${selectedType === type ? 'active' : ''} ${hidden ? 'legend-item-hidden' : ''}`}
+            >
+              <label className="legend-toggle" onClick={e => e.stopPropagation()}>
+                <input
+                  type="checkbox"
+                  checked={!hidden}
+                  onChange={() => toggleTypeVisibility(type)}
+                />
+              </label>
+              <button
+                type="button"
+                className="legend-item-btn"
+                onClick={() => onTypeClick(type)}
+              >
+                <div className="legend-dot" style={{ background: hidden ? '#555' : color }} />
+                <span style={{ opacity: hidden ? 0.4 : 1 }}>{formatNodeType(type)}</span>
+                <span className="legend-count" style={{ opacity: hidden ? 0.3 : 1 }}>{count}</span>
+              </button>
+            </div>
+          )
+        })}
         <div className="graph-controls">
           <button type="button" className="graph-control-btn" onClick={() => zoomBy(0.85)}>
             -

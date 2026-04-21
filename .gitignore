@@ -7,3 +7,8 @@ llm-wiki.md
 /data/*.json
 /data/*.md
 !/README.md
+
+# Python bytecode
+__pycache__/
+*.pyc
+*.pyo

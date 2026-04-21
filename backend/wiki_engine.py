@@ -167,12 +167,28 @@ def _node_mentioned_in_text(node: dict, text: str) -> bool:
     if len(label) < 3:
         return False
 
+    # Exact full-label match (case-insensitive)
     if re.search(rf"(?<!\w){re.escape(label)}(?!\w)", text, re.IGNORECASE):
         return True
 
-    label_terms = [term for term in re.split(r"[_\s-]+", node.get("id", "")) if len(term) >= 4]
+    # Acronym in parentheses: "Process Reward Model (PRM)" → check bare "PRM"
+    m = re.search(r'\(([A-Z][A-Z0-9\-]{1,})\)', label)
+    if m and re.search(rf"(?<!\w){re.escape(m.group(1))}(?!\w)", text):
+        return True
+
+    # Single-word proper noun (e.g. "Z3", "Lean", "Isabelle") — accept if it
+    # appears as a distinct token and is not a generic English word.
+    words = label.split()
+    if len(words) == 1 and len(label) >= 2 and not label.islower():
+        return bool(re.search(rf"(?<!\w){re.escape(label)}(?!\w)", text))
+
+    # Multi-word fallback: require ALL id terms ≥5 chars to appear — avoids
+    # false positives from short common words like "proof" / "success".
+    label_terms = [t for t in re.split(r"[_\s\-()]+", node.get("id", "")) if len(t) >= 5]
+    if len(label_terms) < 2:
+        return False  # not enough distinctive terms to be confident
     lowered = text.casefold()
-    return bool(label_terms and all(term.casefold() in lowered for term in label_terms[:2]))
+    return all(t.casefold() in lowered for t in label_terms)
 
 
 def enrich_graph_with_sources(graph: dict, raw_dir: Path) -> bool:
@@ -331,6 +347,15 @@ No markdown fences. Just the JSON object."""
         return {}
 
 
+def _norm_label(label: str) -> str:
+    """Normalize a label for fuzzy deduplication (case-insensitive, punctuation-stripped, singular)."""
+    s = re.sub(r"[^a-z0-9]+", "", label.casefold())
+    # Collapse trivial plural → singular so "SMT Solvers" matches "SMT Solver"
+    if s.endswith("s") and len(s) > 3:
+        s = s[:-1]
+    return s
+
+
 def merge_into_graph(new_data: dict, graph_path: Path, paper: dict | None = None) -> dict:
     """Merge newly extracted nodes/edges into the persistent graph."""
     if graph_path.exists():
@@ -340,6 +365,10 @@ def merge_into_graph(new_data: dict, graph_path: Path, paper: dict | None = None
         graph = {"nodes": [], "edges": [], "papers": []}
 
     existing_node_ids = {n["id"] for n in graph["nodes"]}
+    # Secondary index: normalized label → canonical id, for catching same-concept/different-id duplicates
+    label_to_id: dict[str, str] = {
+        _norm_label(n["label"]): n["id"] for n in graph["nodes"]
+    }
     existing_edge_keys = {
         (e["source"], e["target"], e["relation"]) for e in graph["edges"]
     }
@@ -365,10 +394,20 @@ def merge_into_graph(new_data: dict, graph_path: Path, paper: dict | None = None
     else:
         graph["papers"].append(paper)
 
+    # Track id remapping: incoming id → canonical id (for edge fixup below)
+    id_remap: dict[str, str] = {}
+
     for node in new_data["nodes"]:
-        if node["id"] in existing_node_ids:
+        norm = _norm_label(node["label"])
+        # Resolve canonical id: prefer exact id match, fall back to label match
+        canonical_id = node["id"] if node["id"] in existing_node_ids else label_to_id.get(norm)
+
+        if canonical_id:
+            # Node already exists — merge into it
+            if canonical_id != node["id"]:
+                id_remap[node["id"]] = canonical_id
             for i, n in enumerate(graph["nodes"]):
-                if n["id"] == node["id"]:
+                if n["id"] == canonical_id:
                     graph["nodes"][i]["description"] = node["description"]
                     if node.get("wiki"):
                         graph["nodes"][i]["wiki"] = node["wiki"]
@@ -382,12 +421,18 @@ def merge_into_graph(new_data: dict, graph_path: Path, paper: dict | None = None
             node["sources"] = [source_entry]
             graph["nodes"].append(node)
             existing_node_ids.add(node["id"])
+            label_to_id[norm] = node["id"]
 
     for edge in new_data["edges"]:
-        key = (edge["source"], edge["target"], edge["relation"])
+        # Remap any ids that were merged into an existing canonical node
+        src = id_remap.get(edge["source"], edge["source"])
+        tgt = id_remap.get(edge["target"], edge["target"])
+        if src == tgt:
+            continue  # skip self-loops created by id collapse
+        key = (src, tgt, edge["relation"])
         if key not in existing_edge_keys:
-            if edge["source"] in existing_node_ids and edge["target"] in existing_node_ids:
-                graph["edges"].append(edge)
+            if src in existing_node_ids and tgt in existing_node_ids:
+                graph["edges"].append({**edge, "source": src, "target": tgt})
                 existing_edge_keys.add(key)
 
     return graph

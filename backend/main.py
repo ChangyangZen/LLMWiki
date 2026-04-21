@@ -3,6 +3,7 @@ FastAPI backend for LLM Wiki system.
 """
 import json
 import logging
+import re
 import shutil
 import sys
 import traceback
@@ -188,6 +189,71 @@ def _ingest_markdown(text: str, filename: str) -> dict:
         "total_nodes": len(graph["nodes"]),
         "total_edges": len(graph["edges"]),
     }
+
+
+# ── Search endpoint ───────────────────────────────────────────────────────────
+
+def _build_snippet(text: str, match_start: int, match_len: int, context_before: int = 40, context_after: int = 120) -> str:
+    """Extract a text snippet around a match, snapped to word boundaries."""
+    start = max(0, match_start - context_before)
+    end = min(len(text), match_start + match_len + context_after)
+
+    # Snap to word boundaries
+    if start > 0:
+        space = text.rfind(' ', max(0, start - 20), start + 10)
+        if space != -1:
+            start = space + 1
+    if end < len(text):
+        space = text.find(' ', end - 10, end + 20)
+        if space != -1:
+            end = space
+
+    snippet = text[start:end].strip()
+    snippet = re.sub(r'\s+', ' ', snippet)
+
+    prefix = '...' if start > 0 else ''
+    suffix = '...' if end < len(text) else ''
+    return f"{prefix}{snippet}{suffix}"
+
+
+@app.get("/api/search/papers")
+def search_papers(q: str = "", limit: int = 10):
+    """Full-text search across raw paper markdown files."""
+    q = q.strip()
+    if len(q) < 2:
+        return []
+
+    graph = _load_graph()
+    paper_by_filename = {p.get("filename", ""): p for p in graph.get("papers", [])}
+
+    results = []
+    q_lower = q.lower()
+
+    for path in sorted(RAW_DIR.glob("*.md")):
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+
+        idx = text.lower().find(q_lower)
+        if idx == -1:
+            continue
+
+        snippet = _build_snippet(text, idx, len(q))
+        paper_meta = paper_by_filename.get(path.name, {})
+
+        results.append({
+            "paper_id": paper_meta.get("id", path.stem),
+            "title": paper_meta.get("title", path.stem),
+            "source_url": paper_meta.get("source_url", ""),
+            "filename": path.name,
+            "snippet": snippet,
+        })
+
+        if len(results) >= limit:
+            break
+
+    return results
 
 
 @app.delete("/api/graph/reset")
